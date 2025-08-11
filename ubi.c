@@ -12,6 +12,10 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#ifdef __linux__
+# include <sys/sendfile.h>
+#endif
+
 struct elf_header
 {
     unsigned char e_ident[16];  // ELF identification
@@ -234,9 +238,138 @@ struct ubi_header
     uint32_t section_flags[UBI_MAX_SECTIONS];
     uint64_t section_offsets[UBI_MAX_SECTIONS];
     uint64_t section_sizes[UBI_MAX_SECTIONS];
-    char section_hashes[UBI_MAX_SECTIONS][17];
+    uint64_t section_hashes[UBI_MAX_SECTIONS];
     uint64_t reserved[8];
 };
+
+/* Little-endian serialization helpers for ubi_header */
+
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+# define htole16(x) ((uint16_t) (x))
+# define htole32(x) ((uint32_t) (x))
+# define htole64(x) ((uint64_t) (x))
+# define le16toh(x) ((uint16_t) (x))
+# define le32toh(x) ((uint32_t) (x))
+# define le64toh(x) ((uint64_t) (x))
+#else
+static inline uint16_t bswap16(uint16_t v)
+{
+    return (uint16_t) ((v >> 8) | (v << 8));
+}
+static inline uint32_t bswap32(uint32_t v)
+{
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) | ((v & 0x00FF0000u) >> 8) | ((v & 0xFF000000u) >> 24);
+}
+static inline uint64_t bswap64(uint64_t v)
+{
+    return ((uint64_t) bswap32((uint32_t) (v & 0xFFFFFFFFu)) << 32) | (uint64_t) bswap32((uint32_t) (v >> 32));
+}
+# define htole16(x) bswap16((uint16_t) (x))
+# define htole32(x) bswap32((uint32_t) (x))
+# define htole64(x) bswap64((uint64_t) (x))
+# define le16toh(x) bswap16((uint16_t) (x))
+# define le32toh(x) bswap32((uint32_t) (x))
+# define le64toh(x) bswap64((uint64_t) (x))
+#endif
+
+static int ubi_header_write(FILE *f, const struct ubi_header *h)
+{
+    uint32_t magic = htole32((uint32_t) h->magic);
+    uint16_t version = htole16((uint16_t) h->version);
+    uint16_t section_count = htole16((uint16_t) h->section_count);
+
+    if (fwrite(&magic, sizeof(magic), 1, f) != 1)
+        return -1;
+    if (fwrite(&version, sizeof(version), 1, f) != 1)
+        return -1;
+    if (fwrite(&section_count, sizeof(section_count), 1, f) != 1)
+        return -1;
+
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint32_t v = htole32((uint32_t) h->section_flags[i]);
+        if (fwrite(&v, sizeof(v), 1, f) != 1)
+            return -1;
+    }
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint64_t v = htole64((uint64_t) h->section_offsets[i]);
+        if (fwrite(&v, sizeof(v), 1, f) != 1)
+            return -1;
+    }
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint64_t v = htole64((uint64_t) h->section_sizes[i]);
+        if (fwrite(&v, sizeof(v), 1, f) != 1)
+            return -1;
+    }
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint64_t v = htole64((uint64_t) h->section_hashes[i]);
+        if (fwrite(&v, sizeof(v), 1, f) != 1)
+            return -1;
+    }
+    for (size_t i = 0; i < 8; ++i) {
+        uint64_t v = htole64((uint64_t) h->reserved[i]);
+        if (fwrite(&v, sizeof(v), 1, f) != 1)
+            return -1;
+    }
+    return 0;
+}
+
+static int ubi_header_read(FILE *f, struct ubi_header *h)
+{
+    uint32_t magic;
+    uint16_t version, section_count;
+
+    if (fread(&magic, sizeof(magic), 1, f) != 1)
+        return -1;
+    if (fread(&version, sizeof(version), 1, f) != 1)
+        return -1;
+    if (fread(&section_count, sizeof(section_count), 1, f) != 1)
+        return -1;
+
+    h->magic = le32toh(magic);
+    h->version = le16toh(version);
+    h->section_count = le16toh(section_count);
+
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint32_t v;
+        if (fread(&v, sizeof(v), 1, f) != 1)
+            return -1;
+        h->section_flags[i] = le32toh(v);
+    }
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint64_t v;
+        if (fread(&v, sizeof(v), 1, f) != 1)
+            return -1;
+        h->section_offsets[i] = le64toh(v);
+    }
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint64_t v;
+        if (fread(&v, sizeof(v), 1, f) != 1)
+            return -1;
+        h->section_sizes[i] = le64toh(v);
+    }
+    for (size_t i = 0; i < UBI_MAX_SECTIONS; ++i) {
+        uint64_t v;
+        if (fread(&v, sizeof(v), 1, f) != 1)
+            return -1;
+        h->section_hashes[i] = le64toh(v);
+    }
+    for (size_t i = 0; i < 8; ++i) {
+        uint64_t v;
+        if (fread(&v, sizeof(v), 1, f) != 1)
+            return -1;
+        h->reserved[i] = le64toh(v);
+    }
+    return 0;
+}
+
+static size_t ubi_header_disk_size(void)
+{
+    return sizeof(uint32_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint32_t) * UBI_MAX_SECTIONS
+         + sizeof(uint64_t) * UBI_MAX_SECTIONS /* offsets */
+         + sizeof(uint64_t) * UBI_MAX_SECTIONS /* sizes */
+         + sizeof(uint64_t) * UBI_MAX_SECTIONS /* hashes */
+         + sizeof(uint64_t) * 8;
+}
 
 int todo(const char *msg)
 {
@@ -244,7 +377,7 @@ int todo(const char *msg)
     return 1;
 }
 
-void ubi_fnv1a_hash(const void *data, size_t len, char *out_hex)
+uint64_t ubi_fnv1a_hash(const void *data, size_t len)
 {
     uint64_t hash = 14695981039346656037ULL;
     const unsigned char *p = (const unsigned char *) data;
@@ -252,17 +385,16 @@ void ubi_fnv1a_hash(const void *data, size_t len, char *out_hex)
         hash ^= p[i];
         hash *= 1099511628211ULL;
     }
-    // Output as hex string (16 chars)
-    sprintf(out_hex, "%016llx", (unsigned long long) hash);
+    return hash;
 }
 
 int error(const char *format, ...)
 {
     va_list args;
     va_start(args, format);
-    fprintf(stderr, "ubi: \033[31merror\033[m: ");
+    fputs("ubi: ", stderr);
     vfprintf(stderr, format, args);
-    fprintf(stderr, "\n");
+    fputs("\n", stderr);
     va_end(args);
     return 1;
 }
@@ -273,10 +405,8 @@ int execute(const char *path)
     struct ubi_header header = {0};
     FILE *file = fopen(path, "rb");
 
-    if (file == NULL) {
-        error("failed to open file: %s", path);
-        return 1;
-    }
+    if (file == NULL)
+        return error("failed to open file: %s", path);
 
     char shebang[32];
     long start_pos = ftell(file);
@@ -290,7 +420,7 @@ int execute(const char *path)
         fseek(file, start_pos, SEEK_SET);
     }
 
-    if (fread(&header, sizeof(header), 1, file) != 1) {
+    if (ubi_header_read(file, &header) != 0) {
         error("failed to read ubi header from file: %s", path);
         fclose(file);
         return 1;
@@ -303,7 +433,7 @@ int execute(const char *path)
         return 1;
     }
 
-    if (header.version != 1) {
+    if (header.version != UBI_VERSION) {
         error("unsupported ubi version: %zu in file: %s", header.version, path);
         fclose(file);
         return 1;
@@ -367,42 +497,52 @@ int execute(const char *path)
             fclose(file);
 
 #ifdef __linux__
-            int fd = memfd_create(header.section_hashes[i], MFD_CLOEXEC);
+            char name[17];
+            snprintf(name, sizeof(name), "%016llx", (unsigned long long) header.section_hashes[i]);
+            int fd = memfd_create(name, MFD_CLOEXEC);
             if (fd == -1) {
-                error("failed to create memfd: %s", header.section_hashes[i]);
+                error("failed to create memfd: %s", name);
                 return 1;
             }
 
-            size_t left = section_size;
-            size_t written = 0;
-            while (left > 0) {
-                size_t to_read = sizeof(buf);
-                if (to_read > left)
-                    to_read = left;
-                size_t read_bytes = fread(buf, 1, to_read, stdin);
-                if (read_bytes == 0) {
-                    error("failed to read section data from file: %s", path);
-                    close(fd);
-                    return 1;
-                }
-                ssize_t w = write(fd, buf, read_bytes);
-                if (w < 0) {
-                    error("failed to write to memfd: %s", header.section_hashes[i]);
-                    close(fd);
-                    return 1;
-                }
-                written += w;
-                left -= w;
-            }
-            if (written != section_size) {
-                error("section size mismatch: expected %zu, got %zu", section_size, written);
+            int in_fd = open(path, O_RDONLY);
+            if (in_fd == -1) {
+                error("failed to open ubi file for extraction: %s", path);
                 close(fd);
                 return 1;
             }
+
+            off_t off = (off_t) header.section_offsets[i];
+            size_t left = section_size;
+            size_t written = 0;
+            while (left > 0) {
+                ssize_t s = sendfile(fd, in_fd, &off, left);
+                if (s < 0) {
+                    error("failed to copy section with sendfile: %s", name);
+                    close(in_fd);
+                    close(fd);
+                    return 1;
+                }
+                if (s == 0) {
+                    error("unexpected EOF when reading section data: %s", path);
+                    close(in_fd);
+                    close(fd);
+                    return 1;
+                }
+                written += (size_t) s;
+                left -= (size_t) s;
+            }
+            if (written != section_size) {
+                error("section size mismatch: expected %zu, got %zu", section_size, written);
+                close(in_fd);
+                close(fd);
+                return 1;
+            }
+            close(in_fd);
             fchmod(fd, 0755);
-            char *args[] = {header.section_hashes[i], NULL};
+            char *args[] = {name, NULL};
             if (fexecve(fd, args, environ) == -1) {
-                error("fexecve failed for section: %s", header.section_hashes[i]);
+                error("fexecve failed for section: %s", name);
                 close(fd);
                 return 1;
             }
@@ -410,8 +550,10 @@ int execute(const char *path)
             return 1;
 #elif __APPLE__
             mkdir("/tmp/ubi", 0777);
+            char name[17];
+            snprintf(name, sizeof(name), "%016llx", (unsigned long long) header.section_hashes[i]);
             char cache_path[128];
-            snprintf(cache_path, sizeof(cache_path), "/tmp/ubi/%s", header.section_hashes[i]);
+            snprintf(cache_path, sizeof(cache_path), "/tmp/ubi/%s", name);
 
             if (access(cache_path, X_OK) == 0) {
                 execl(cache_path, cache_path, NULL);
@@ -675,7 +817,6 @@ int merge(char **source_files, int source_count, const char *output_file)
         header.section_flags[i] = section_flags;
         header.section_sizes[i] = file_size;
 
-        // Compute and store section hash (FNV-1a)
         char *buffer = malloc(file_size);
         if (buffer == NULL) {
             error("memory allocation failed for buffer.");
@@ -684,7 +825,7 @@ int merge(char **source_files, int source_count, const char *output_file)
             return 1;
         }
         fread(buffer, 1, file_size, input);
-        ubi_fnv1a_hash(buffer, file_size, header.section_hashes[i]);
+        header.section_hashes[i] = ubi_fnv1a_hash(buffer, file_size);
         free(buffer);
 
         fclose(input);
@@ -695,10 +836,14 @@ int merge(char **source_files, int source_count, const char *output_file)
     header.section_count = source_count;
 
     fseek(output, (long) shebang_len, SEEK_SET);
-    fwrite(&header, sizeof(header), 1, output);
+    if (ubi_header_write(output, &header) != 0) {
+        error("failed to write ubi header to output file: %s", output_file);
+        fclose(output);
+        return 1;
+    }
 
     // Move file pointer to immediately after header for section writing
-    fseek(output, (long) shebang_len + (long) sizeof(header), SEEK_SET);
+    fseek(output, (long) shebang_len + (long) ubi_header_disk_size(), SEEK_SET);
 
     // Write all sections sequentially, updating offsets
     for (int i = 0; i < source_count; i++) {
@@ -726,17 +871,27 @@ int merge(char **source_files, int source_count, const char *output_file)
         fclose(input);
     }
 
-    fseek(output, (long) shebang_len, SEEK_SET);
-    fwrite(&header, sizeof(header), 1, output);
+    if (fseek(output, (long) shebang_len, SEEK_SET) != 0) {
+        perror("ubi: fseek failed when writing header");
+        fclose(output);
+        return 1;
+    }
+    if (ubi_header_write(output, &header) != 0) {
+        error("failed to write ubi header to output file: %s", output_file);
+        fclose(output);
+        return 1;
+    }
 
-    // Make the output file executable
     if (chmod(output_file, 0755) != 0) {
         error("failed to set executable permissions on output file: %s", output_file);
         fclose(output);
         return 1;
     }
 
-    fclose(output);
+    if (fclose(output) != 0) {
+        perror("ubi: fclose failed on output file");
+        return 1;
+    }
     free(source_files);
 
     return 0;
@@ -753,11 +908,18 @@ int inspect(const char *binary_path)
     char shebang[20];
     if (fgets(shebang, sizeof(shebang), file) == NULL || strncmp(shebang, "#!/usr/bin/env ubi", 18) != 0) {
         // Not a shebang, rewind to start
-        fseek(file, 0, SEEK_SET);
+        if (fseek(file, 0, SEEK_SET) != 0) {
+            perror("ubi: fseek failed");
+            fclose(file);
+            return 1;
+        }
     }
 
     struct ubi_header hdr;
-    fread(&hdr, sizeof(hdr), 1, file);
+    if (ubi_header_read(file, &hdr) != 0) {
+        fclose(file);
+        return error("failed to read ubi header.");
+    }
     fclose(file);
 
     if (hdr.magic != 0x55424900) {
@@ -766,13 +928,13 @@ int inspect(const char *binary_path)
     }
 
     printf("UBI Binary Header:\n");
-    printf("  Magic: 0x%zx\n", hdr.magic);
-    printf("  Version: %zu\n", hdr.version);
-    printf("  Section Count: %zu\n", hdr.section_count);
+    printf("  Magic: 0x%08x\n", (unsigned) hdr.magic);
+    printf("  Version: %u\n", (unsigned) hdr.version);
+    printf("  Section Count: %u\n", (unsigned) hdr.section_count);
 
     for (size_t i = 0; i < hdr.section_count; i++) {
         printf("  Section %zu:\n", i);
-        printf("    Flags: 0x%zx\n", hdr.section_flags[i]);
+        printf("    Flags: 0x%08x\n", (unsigned) hdr.section_flags[i]);
         size_t format = hdr.section_flags[i] & 0xF0;
         size_t arch = hdr.section_flags[i] & 0x0F;
 
@@ -825,8 +987,8 @@ int inspect(const char *binary_path)
             printf("      Unknown arch\n");
             break;
         }
-        printf("    Offset: %lld\n", hdr.section_offsets[i]);
-        printf("    Size: %zu", hdr.section_sizes[i]);
+        printf("    Offset: %llu\n", (unsigned long long) hdr.section_offsets[i]);
+        printf("    Size: %llu", (unsigned long long) hdr.section_sizes[i]);
         if (hdr.section_sizes[i] >= 1024 * 1024) {
             printf(" (%.2f MB)", (double) hdr.section_sizes[i] / (1024.0 * 1024.0));
         } else if (hdr.section_sizes[i] >= 1024) {
@@ -872,7 +1034,7 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            if (argv[i][1] == 'o' && argv[i][2] == '\0') {
+            if (strcmp(argv[i], "-o") == 0) {
                 if (output_file != NULL) {
                     error("output file already specified with -o option.");
                     return 1;
@@ -892,6 +1054,7 @@ int main(int argc, char **argv)
                     return 0;
                 } else {
                     error("unknown option - `%s`", argv[i]);
+                    return 1;
                 }
             }
         } else {
