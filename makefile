@@ -1,7 +1,7 @@
-ubi: ubi.o
-ubi.o: ubi.c
+CFLAGS := -Wall -Wextra -O2
 
+ubi: ubi.c
+
+.PHONY:
 clean:
-	rm -f ubi.o ubi
-
-.PHONY: clean
+	rm -f ubi

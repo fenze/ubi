@@ -3,6 +3,7 @@
 
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,19 +228,14 @@ enum
 
 struct ubi_header
 {
-    /* Magic number and version */
-    size_t magic;
-    size_t version;
-
-    /* Section offsets and sizes */
-    size_t section_count;
-    size_t section_flags[UBI_MAX_SECTIONS];
-    off_t section_offsets[UBI_MAX_SECTIONS];
-    size_t section_sizes[UBI_MAX_SECTIONS];
-    char section_hashes[UBI_MAX_SECTIONS][17]; // 16 hex chars + null terminator for FNV-1a
-
-    /* Reserved for future use */
-    size_t reserved[8];
+    uint32_t magic;
+    uint16_t version;
+    uint16_t section_count;
+    uint32_t section_flags[UBI_MAX_SECTIONS];
+    uint64_t section_offsets[UBI_MAX_SECTIONS];
+    uint64_t section_sizes[UBI_MAX_SECTIONS];
+    char section_hashes[UBI_MAX_SECTIONS][17];
+    uint64_t reserved[8];
 };
 
 int todo(const char *msg)
@@ -368,7 +364,6 @@ int execute(const char *path)
         if (section_arch == arch_flags) {
             fseek(file, header.section_offsets[i], SEEK_SET);
             size_t section_size = header.section_sizes[i];
-            char buf[8192];
             fclose(file);
 
 #ifdef __linux__
