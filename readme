@@ -1,0 +1,57 @@
+UBI - Universal Binary Interface
+===============================
+
+NAME
+----
+ubi - universal binary wrapper for multi-platform executables
+
+SYNOPSIS
+--------
+ubi [options] [exec...] [--inspect <binary>]
+
+DESCRIPTION
+-----------
+UBI is a tool for creating, merging, inspecting, and executing universal binaries that contain multiple platform-specific executables (e.g., Mach-O, ELF) in a single file. It enables seamless cross-platform distribution and execution.
+
+FEATURES
+--------
+- Merge multiple platform executables into a single universal binary
+- Inspect contents and architectures of universal binaries
+- Add or remove architectures/sections from existing binaries
+- Fast extraction and execution with caching
+- Supports ELF (Linux), Mach-O (macOS), and fat binaries (macOS universal)
+- Command-line interface similar to Unix tools
+
+USAGE EXAMPLES
+--------------
+
+aarch64-linux-musl-cc -o linux-aarch64 main.c
+x86_64-linux-musl-cc -o linux-x86_64 main.c
+clang -o darwin-aarch64 main.c // if you have a macOS system
+
+// Create a universal binary containing the above executables
+ubi -o main darwin-aarch64 linux-aarch64 linux-x86_64
+
+// If you installed ubi, you can run it directly
+./main
+
+// Or for testing
+PATH=$(pwd):$PATH ./main
+
+// Inspect the contents of the universal binary
+ubi inspect main
+
+TODO
+----
+
+- Implement add/remove section functionality
+- Improve error handling and user feedback
+- Add more tests and examples
+
+AUTHOR
+------
+Kacper Fiedorowicz <fiedorowicz.kacper@gmail.com>
+
+COPYRIGHT
+---------
+This project is licensed under the MIT License. See the LICENSE file for details.

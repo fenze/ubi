@@ -3,12 +3,11 @@
 
 #include <fcntl.h>
 #include <stdarg.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/time.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -249,7 +248,6 @@ int todo(const char *msg)
     return 1;
 }
 
-// Simple FNV-1a hash for section data
 void ubi_fnv1a_hash(const void *data, size_t len, char *out_hex)
 {
     uint64_t hash = 14695981039346656037ULL;
@@ -261,6 +259,7 @@ void ubi_fnv1a_hash(const void *data, size_t len, char *out_hex)
     // Output as hex string (16 chars)
     sprintf(out_hex, "%016llx", (unsigned long long) hash);
 }
+
 int error(const char *format, ...)
 {
     va_list args;
@@ -283,7 +282,6 @@ int execute(const char *path)
         return 1;
     }
 
-    // Skip shebang line
     char shebang[32];
     long start_pos = ftell(file);
     if (fgets(shebang, sizeof(shebang), file) == NULL) {
@@ -291,8 +289,8 @@ int execute(const char *path)
         fclose(file);
         return 1;
     }
+
     if (strncmp(shebang, "#!/usr/bin/env ubi", 18) != 0) {
-        // Not a shebang, rewind to start
         fseek(file, start_pos, SEEK_SET);
     }
 
@@ -373,72 +371,108 @@ int execute(const char *path)
             char buf[8192];
             fclose(file);
 
-            if (platform == UBI_PLATFORM_LINUX) {
-                todo("Linux execution not implemented yet.");
+#ifdef __linux__
+            int fd = memfd_create(header.section_hashes[i], MFD_CLOEXEC);
+            if (fd == -1) {
+                error("failed to create memfd: %s", header.section_hashes[i]);
                 return 1;
-            } else if (platform == UBI_PLATFORM_MACOS) {
-                char *section_data = malloc(section_size);
-                if (!section_data) {
-                    error("memory allocation failed for section buffer.");
-                    return 1;
-                }
-                FILE *ubi = fopen(path, "rb");
-                if (!ubi) {
-                    error("failed to reopen ubi file for extraction: %s", path);
-                    free(section_data);
-                    return 1;
-                }
-                fseek(ubi, header.section_offsets[i], SEEK_SET);
-                size_t nread = fread(section_data, 1, section_size, ubi);
-                fclose(ubi);
-                if (nread != section_size) {
-                    error("failed to read section data for hashing.");
-                    free(section_data);
-                    return 1;
-                }
+            }
 
-                // 2. Use precomputed hash from ubi_header
-                mkdir("/tmp/ubi", 0777);
-                char cache_path[128];
-                snprintf(cache_path, sizeof(cache_path), "/tmp/ubi/%s", header.section_hashes[i]);
-
-                // 3. If file exists and is executable, execve it
-                if (access(cache_path, X_OK) == 0) {
-                    free(section_data);
-                    execl(cache_path, cache_path, NULL);
-                    perror("execl failed");
+            size_t left = section_size;
+            size_t written = 0;
+            while (left > 0) {
+                size_t to_read = sizeof(buf);
+                if (to_read > left)
+                    to_read = left;
+                size_t read_bytes = fread(buf, 1, to_read, stdin);
+                if (read_bytes == 0) {
+                    error("failed to read section data from file: %s", path);
+                    close(fd);
                     return 1;
                 }
-
-                // 4. Write section to cache file
-                int fd = open(cache_path, O_CREAT | O_WRONLY | O_TRUNC, 0755);
-                if (fd == -1) {
-                    error("failed to create cache file: %s", cache_path);
-                    free(section_data);
+                ssize_t w = write(fd, buf, read_bytes);
+                if (w < 0) {
+                    error("failed to write to memfd: %s", header.section_hashes[i]);
+                    close(fd);
                     return 1;
                 }
-                size_t left = section_size;
-                size_t written = 0;
-                while (left > 0) {
-                    ssize_t w = write(fd, section_data + written, left);
-                    if (w < 0) {
-                        error("failed to write to cache file: %s", cache_path);
-                        close(fd);
-                        free(section_data);
-                        return 1;
-                    }
-                    written += w;
-                    left -= w;
-                }
-                fchmod(fd, 0755);
+                written += w;
+                left -= w;
+            }
+            if (written != section_size) {
+                error("section size mismatch: expected %zu, got %zu", section_size, written);
                 close(fd);
-                free(section_data);
+                return 1;
+            }
+            fchmod(fd, 0755);
+            char *args[] = {header.section_hashes[i], NULL};
+            if (fexecve(fd, args, environ) == -1) {
+                error("fexecve failed for section: %s", header.section_hashes[i]);
+                close(fd);
+                return 1;
+            }
+            close(fd);
+            return 1;
+#elif __APPLE__
+            mkdir("/tmp/ubi", 0777);
+            char cache_path[128];
+            snprintf(cache_path, sizeof(cache_path), "/tmp/ubi/%s", header.section_hashes[i]);
 
-                // 5. Execve the cached file
+            if (access(cache_path, X_OK) == 0) {
                 execl(cache_path, cache_path, NULL);
                 perror("execl failed");
                 return 1;
             }
+
+            // Use mmap for efficient extraction
+            int ubi_fd = open(path, O_RDONLY);
+            if (ubi_fd == -1) {
+                error("failed to open ubi file for mmap: %s", path);
+                return 1;
+            }
+            void *section_data = NULL;
+            size_t page_size = sysconf(_SC_PAGESIZE);
+            off_t map_offset = header.section_offsets[i] & ~(page_size - 1);
+            off_t offset_in_map = header.section_offsets[i] - map_offset;
+            size_t map_length = offset_in_map + section_size;
+            section_data = mmap(NULL, map_length, PROT_READ, MAP_PRIVATE, ubi_fd, map_offset);
+            if (section_data == MAP_FAILED) {
+                error("mmap failed for section extraction.");
+                close(ubi_fd);
+                return 1;
+            }
+
+            int fd = open(cache_path, O_CREAT | O_WRONLY | O_TRUNC, 0755);
+            if (fd == -1) {
+                error("failed to create cache file: %s", cache_path);
+                munmap(section_data, map_length);
+                close(ubi_fd);
+                return 1;
+            }
+            size_t left = section_size;
+            size_t written = 0;
+            const char *src = (const char *) section_data + offset_in_map;
+            while (left > 0) {
+                ssize_t w = write(fd, src + written, left);
+                if (w < 0) {
+                    error("failed to write to cache file: %s", cache_path);
+                    close(fd);
+                    munmap(section_data, map_length);
+                    close(ubi_fd);
+                    return 1;
+                }
+                written += w;
+                left -= w;
+            }
+            fchmod(fd, 0755);
+            close(fd);
+            munmap(section_data, map_length);
+            close(ubi_fd);
+
+            execl(cache_path, cache_path, NULL);
+            perror("execl failed");
+            return 1;
+#endif
         }
     }
 
@@ -468,7 +502,6 @@ int merge(char **source_files, int source_count, const char *output_file)
         return 1;
     }
 
-    // First pass: determine section flags and sizes
     for (int i = 0; i < source_count; i++) {
         FILE *input = fopen(source_files[i], "rb");
         if (input == NULL) {
@@ -481,8 +514,6 @@ int merge(char **source_files, int source_count, const char *output_file)
         fread(magic, 1, 4, input);
 
         size_t section_flags = 0;
-        int is_exec = 0;
-        int is_static = 0;
 
         if (memcmp(magic,
                    "\x7f"
@@ -529,30 +560,30 @@ int merge(char **source_files, int source_count, const char *output_file)
             }
 
             // Check for static linking: ELF is static if there is no PT_INTERP program header
-            // Read program headers
-            is_static = 1;
+            // Read program headers to look for PT_INTERP (type 3)
+            int is_static = 1; // Assume static unless PT_INTERP is found
             if (elf_hdr.e_phoff && elf_hdr.e_phnum > 0) {
+                // Seek to the start of the program header table
                 fseek(input, elf_hdr.e_phoff, SEEK_SET);
                 for (int ph = 0; ph < elf_hdr.e_phnum; ++ph) {
-                    unsigned char phdr[56]; // max size for 64-bit
+                    unsigned char phdr[56]; // Enough for both 32/64-bit program headers
                     size_t phdr_size = elf_hdr.e_phentsize;
                     if (phdr_size > sizeof(phdr))
                         phdr_size = sizeof(phdr);
+                    // Read one program header entry
                     fread(phdr, 1, phdr_size, input);
-                    // PT_INTERP is 3, p_type is first 4 bytes (little-endian or big-endian)
+                    // The first 4 bytes are p_type (program header type)
+                    // PT_INTERP is 3. This is true for both little and big endian ELF.
+                    // We read as little-endian here, which is fine for most platforms.
                     unsigned int p_type = phdr[0] | (phdr[1] << 8) | (phdr[2] << 16) | (phdr[3] << 24);
-                    if (p_type == 3) {
+                    if (p_type == 3) { // PT_INTERP found: this means dynamically linked
                         is_static = 0;
                         break;
                     }
                 }
             }
 
-            // File type
-            if (elf_hdr.e_type == ELF_FILETYPE_EXEC || elf_hdr.e_type == ELF_FILETYPE_DYN) {
-                is_exec = 1;
-            }
-            if (!is_exec) {
+            if (!(elf_hdr.e_type == ELF_FILETYPE_EXEC || elf_hdr.e_type == ELF_FILETYPE_DYN)) {
                 error("ELF file is not executable: %s (e_type=%u)", source_files[i], elf_hdr.e_type);
                 fclose(input);
                 fclose(output);
@@ -575,14 +606,25 @@ int merge(char **source_files, int source_count, const char *output_file)
             fread(macho_hdr_buf, 1, sizeof(macho_hdr_buf), input);
 
             // Detect endianness from magic number
+            // Mach-O magic numbers:
+            //   0xCEFAEDFE (32-bit little-endian)
+            //   0xCFFAEDFE (64-bit little-endian)
+            //   0xFEEDFACE (32-bit big-endian)
+            //   0xFEEDFACF (64-bit big-endian)
+            // We only check for little-endian here (0xCE or 0xCF as first byte)
             int is_le = (magic[0] == 0xCE || magic[0] == 0xCF); // little-endian
+
             unsigned int cputype, filetype;
             if (is_le) {
+                // For little-endian, fields are stored in reverse byte order
+                // cputype is at offset 4..7, filetype at offset 12..15
                 cputype =
                     (macho_hdr_buf[7] << 24) | (macho_hdr_buf[6] << 16) | (macho_hdr_buf[5] << 8) | macho_hdr_buf[4];
                 filetype = (macho_hdr_buf[15] << 24) | (macho_hdr_buf[14] << 16) | (macho_hdr_buf[13] << 8)
                          | macho_hdr_buf[12];
             } else {
+                // For big-endian, fields are stored in natural order
+                // cputype is at offset 4..7, filetype at offset 12..15
                 cputype =
                     (macho_hdr_buf[4] << 24) | (macho_hdr_buf[5] << 16) | (macho_hdr_buf[6] << 8) | macho_hdr_buf[7];
                 filetype = (macho_hdr_buf[12] << 24) | (macho_hdr_buf[13] << 16) | (macho_hdr_buf[14] << 8)
@@ -616,11 +658,7 @@ int merge(char **source_files, int source_count, const char *output_file)
                 return 1;
             }
 
-            // File type
-            if (filetype == MACHO_FILETYPE_EXECUTE) {
-                is_exec = 1;
-            }
-            if (!is_exec) {
+            if (filetype != MACHO_FILETYPE_EXECUTE) {
                 error("Mach-O file is not executable: %s (filetype=%u)", source_files[i], filetype);
                 fclose(input);
                 fclose(output);
@@ -660,7 +698,7 @@ int merge(char **source_files, int source_count, const char *output_file)
     header.magic = UBI_MAGIC;
     header.version = UBI_VERSION;
     header.section_count = source_count;
-    // Write the header right after the shebang
+
     fseek(output, (long) shebang_len, SEEK_SET);
     fwrite(&header, sizeof(header), 1, output);
 
@@ -693,7 +731,6 @@ int merge(char **source_files, int source_count, const char *output_file)
         fclose(input);
     }
 
-    // After writing all sections, update the header with correct offsets/sizes
     fseek(output, (long) shebang_len, SEEK_SET);
     fwrite(&header, sizeof(header), 1, output);
 
@@ -720,7 +757,8 @@ int inspect(const char *binary_path)
 
     char shebang[20];
     if (fgets(shebang, sizeof(shebang), file) == NULL || strncmp(shebang, "#!/usr/bin/env ubi", 18) != 0) {
-        fseek(file, 0, SEEK_SET); // Not a shebang, rewind to start
+        // Not a shebang, rewind to start
+        fseek(file, 0, SEEK_SET);
     }
 
     struct ubi_header hdr;
@@ -807,10 +845,11 @@ int inspect(const char *binary_path)
 
 int help(const char *progname)
 {
-    fprintf(stderr, "usage: %s [options] [files...]\n", progname);
+    fprintf(stderr, "usage: %s [options] [executable...]\n", progname);
     fprintf(stderr, "options:\n");
+    fprintf(stderr, "  inspect <binary>    Inspect a UBI binary file.\n");
     fprintf(stderr, "  -o <output>         Specify output file name.\n");
-    fprintf(stderr, "  --host=<host>       Specify the host architecture and format.\n");
+    fprintf(stderr, "  --version           Show version information.\n");
     fprintf(stderr, "  --help              Show this help message.\n");
     return 0;
 }
@@ -821,11 +860,12 @@ int main(int argc, char **argv)
     char **source_files = NULL;
     const char *output_file = NULL;
 
-    if (argc == 2 && argv[1][0] != '-') {
-        return execute(argv[1]);
-    }
+    if (argc == 1)
+        return help(argv[0]);
 
-    // If argv[1] is 'inspect' then we need to inspect the binary.
+    if (argc == 2 && argv[1][0] != '-')
+        return execute(argv[1]);
+
     if (strcmp(argv[1], "inspect") == 0) {
         if (argc < 3) {
             error("no binary specified for inspection.");
@@ -837,8 +877,12 @@ int main(int argc, char **argv)
 
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '-') {
-            // Handle options like -o, --x86-cc, etc.
             if (argv[i][1] == 'o' && argv[i][2] == '\0') {
+                if (output_file != NULL) {
+                    error("output file already specified with -o option.");
+                    return 1;
+                }
+
                 if (i + 1 < argc) {
                     output_file = argv[++i];
                 } else {
@@ -848,12 +892,14 @@ int main(int argc, char **argv)
             } else if (argv[i][1] == '-') {
                 if (strcmp(argv[i], "--help") == 0) {
                     help(argv[0]);
+                } else if (strcmp(argv[i], "--version") == 0) {
+                    printf("ubi version 1.0\n");
+                    return 0;
                 } else {
                     error("unknown option - `%s`", argv[i]);
                 }
             }
         } else {
-            // We need to push the source file to the list.
             source_files = realloc(source_files, sizeof(char *) * (source_count + 1));
             if (source_files == NULL) {
                 error("memory allocation failed for source files.");
