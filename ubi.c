@@ -441,7 +441,7 @@ int execute(const char *path)
 
     struct utsname uname_info;
     if (uname(&uname_info) != 0) {
-        error("failed to get system information.");
+        error("failed to get system information");
         fclose(file);
         return 1;
     }
@@ -451,7 +451,7 @@ int execute(const char *path)
     } else if (strcmp(uname_info.sysname, "Darwin") == 0) {
         platform = UBI_PLATFORM_MACOS;
     } else {
-        error("ubi can only run on Linux or macOS.");
+        error("ubi can only run on Linux or macOS");
         fclose(file);
         return 1;
     }
@@ -617,15 +617,13 @@ int execute(const char *path)
     return 1;
 }
 
-int merge(char **source_files, int source_count, const char *output_file)
+int ubi_merge(char **source_files, int source_count, const char *output_file)
 {
     struct ubi_header header = {0};
 
     FILE *output = fopen(output_file, "wb");
-    if (output == NULL) {
-        error("failed to open output file: %s", output_file);
-        return 1;
-    }
+    if (output == NULL)
+        return error("failed to open output file: %s", output_file);
 
     // Write shebang as the very first line
     const char *shebang = "#!/usr/bin/env ubi\n";
@@ -739,8 +737,19 @@ int merge(char **source_files, int source_count, const char *output_file)
 
             // Read Mach-O header as raw bytes to handle endianness
             unsigned char macho_hdr_buf[sizeof(struct macho_header)];
-            fseek(input, 0, SEEK_SET);
-            fread(macho_hdr_buf, 1, sizeof(macho_hdr_buf), input);
+            if (fseek(input, 0, SEEK_SET) != 0) {
+                perror("ubi: fseek failed for Mach-O input");
+                fclose(input);
+                fclose(output);
+                return 1;
+            }
+
+            if (fread(macho_hdr_buf, 1, sizeof(macho_hdr_buf), input) != sizeof(macho_hdr_buf)) {
+                perror("ubi: fread failed for Mach-O header");
+                fclose(input);
+                fclose(output);
+                return 1;
+            }
 
             // Detect endianness from magic number
             // Mach-O magic numbers:
@@ -897,7 +906,7 @@ int merge(char **source_files, int source_count, const char *output_file)
     return 0;
 }
 
-int inspect(const char *binary_path)
+int ubi_inspect(const char *binary_path)
 {
     FILE *file = fopen(binary_path, "rb");
     if (file == NULL) {
@@ -1015,7 +1024,7 @@ int main(int argc, char **argv)
 {
     int source_count = 0;
     char **source_files = NULL;
-    const char *output_file = NULL;
+    const char *output_file = "a.out";
 
     if (argc == 1)
         return help(argv[0]);
@@ -1029,7 +1038,7 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        return inspect(argv[2]);
+        return ubi_inspect(argv[2]);
     }
 
     for (int i = 1; i < argc; i++) {
@@ -1068,15 +1077,8 @@ int main(int argc, char **argv)
         }
     }
 
-    if (output_file == NULL) {
-        error("no output file specified with -o option.");
-        return 1;
-    }
+    if (source_count == 0)
+        return error("no source files specified.");
 
-    if (source_count == 0) {
-        error("no source files specified.");
-        return 1;
-    }
-
-    return merge(source_files, source_count, output_file);
+    return ubi_merge(source_files, source_count, output_file);
 }
