@@ -1,17 +1,19 @@
-UBI - Universal Binary Interface
-===============================
-
 NAME
 ----
 ubi - universal binary wrapper for multi-platform executables
 
 SYNOPSIS
 --------
-ubi [options] [exec...] [--inspect <binary>]
+ubi [-o <output>] [-v] [-h] [<exec>...]
+ubi inspect <binary>
+ubi add <binary> <exec>...
+ubi remove <binary> <exec>...
 
 DESCRIPTION
 -----------
-UBI is a tool for creating, merging, inspecting, and executing universal binaries that contain multiple platform-specific executables (e.g., Mach-O, ELF) in a single file. It enables seamless cross-platform distribution and execution.
+UBI is a tool for creating, merging, inspecting, and executing universal binaries that contain
+multiple platform-specific executables (e.g., Mach-O, ELF) in a single file. It enables seamless
+cross-platform distribution and execution.
 
 FEATURES
 --------
@@ -27,26 +29,19 @@ USAGE EXAMPLES
 
 aarch64-linux-musl-cc -o linux-aarch64 main.c
 x86_64-linux-musl-cc -o linux-x86_64 main.c
-clang -o darwin-aarch64 main.c // if you have a macOS system
+clang -o darwin-aarch64 main.c   # On macOS, use clang to build for Apple Silicon
 
-// Create a universal binary containing the above executables
+# Combine the platform-specific executables into a single universal binary
 ubi -o main darwin-aarch64 linux-aarch64 linux-x86_64
 
-// If you installed ubi, you can run it directly
+# Run the universal binary directly (if ubi is installed)
 ./main
 
-// Or for testing
-PATH=$(pwd):$PATH ./main
+# Or, for testing without installing, prepend the current directory to PATH
+PATH="$(pwd):$PATH" ./main
 
-// Inspect the contents of the universal binary
+# View the architectures and executables included in the universal binary
 ubi inspect main
-
-TODO
-----
-
-- Implement add/remove section functionality
-- Improve error handling and user feedback
-- Add more tests and examples
 
 AUTHOR
 ------

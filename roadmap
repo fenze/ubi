@@ -1,8 +1,0 @@
-Roadmap
-=======
-
-[ ] - Implement add/remove section functionality (Feature)
-[ ] - Improve architecture detection on runtime (Portability)
-[ ] - Embed metadata (version/build/orginal filename)
-[ ] - Hash algorithm upgrade / choice (FNV-1a is weak)
-[ ] - Extraction cache management on macOS (Feature)
