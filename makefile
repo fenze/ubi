@@ -1,4 +1,4 @@
-CFLAGS := -Wall -Wextra -O2
+CFLAGS := -Wall -Wextra -Os
 
 ubi: ubi.c
 
