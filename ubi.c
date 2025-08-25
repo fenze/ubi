@@ -13,12 +13,6 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
-#if defined(__linux__)
-# include <sys/mman.h>
-# define MFD_CLOEXEC 0x0001U
-int memfd_create(const char *name, unsigned int flags);
-#endif
-
 #define UBI_VERSION_MAJOR 1
 #define UBI_VERSION_MINOR 0
 #define UBI_VERSION_PATCH 0
@@ -42,87 +36,19 @@ struct elf_header
 };
 
 /* ELF machine types */
-#define ELF_MACHINE_NONE         0x00
-#define ELF_MACHINE_WE32100      0x01
-#define ELF_MACHINE_SPARC        0x02
-#define ELF_MACHINE_X86          0x03
-#define ELF_MACHINE_M68K         0x04
-#define ELF_MACHINE_M88K         0x05
-#define ELF_MACHINE_INTEL_MCU    0x06
-#define ELF_MACHINE_80860        0x07
-#define ELF_MACHINE_MIPS         0x08
-#define ELF_MACHINE_S370         0x09
-#define ELF_MACHINE_MIPS_RS3_LE  0x0A
-#define ELF_MACHINE_PARISC       0x0F
-#define ELF_MACHINE_80960        0x13
-#define ELF_MACHINE_PPC          0x14
-#define ELF_MACHINE_PPC64        0x15
-#define ELF_MACHINE_S390         0x16
-#define ELF_MACHINE_SPU          0x17
-#define ELF_MACHINE_V800         0x24
-#define ELF_MACHINE_FR20         0x25
-#define ELF_MACHINE_RH32         0x26
-#define ELF_MACHINE_RCE          0x27
-#define ELF_MACHINE_ARM          0x28
-#define ELF_MACHINE_ALPHA        0x29
-#define ELF_MACHINE_SH           0x2A
-#define ELF_MACHINE_SPARCV9      0x2B
-#define ELF_MACHINE_TRICORE      0x2C
-#define ELF_MACHINE_ARC          0x2D
-#define ELF_MACHINE_H8_300       0x2E
-#define ELF_MACHINE_H8_300H      0x2F
-#define ELF_MACHINE_H8S          0x30
-#define ELF_MACHINE_H8_500       0x31
-#define ELF_MACHINE_IA_64        0x32
-#define ELF_MACHINE_MIPS_X       0x33
-#define ELF_MACHINE_COLDFIRE     0x34
-#define ELF_MACHINE_M68HC12      0x35
-#define ELF_MACHINE_MMA          0x36
-#define ELF_MACHINE_PCP          0x37
-#define ELF_MACHINE_NCPU         0x38
-#define ELF_MACHINE_NDR1         0x39
-#define ELF_MACHINE_STARCORE     0x3A
-#define ELF_MACHINE_ME16         0x3B
-#define ELF_MACHINE_ST100        0x3C
-#define ELF_MACHINE_TINYJ        0x3D
-#define ELF_MACHINE_X86_64       0x3E
-#define ELF_MACHINE_X86_64_ALIAS ELF_MACHINE_X86_64
-#define ELF_MACHINE_AMD64        0x3E
-#define ELF_MACHINE_SONY_DSP     0x3F
-#define ELF_MACHINE_PDP10        0x40
-#define ELF_MACHINE_PDP11        0x41
-#define ELF_MACHINE_FX66         0x42
-#define ELF_MACHINE_ST9PLUS      0x43
-#define ELF_MACHINE_ST7          0x44
-#define ELF_MACHINE_68HC16       0x45
-#define ELF_MACHINE_68HC11       0x46
-#define ELF_MACHINE_68HC08       0x47
-#define ELF_MACHINE_68HC05       0x48
-#define ELF_MACHINE_SVX          0x49
-#define ELF_MACHINE_ST19         0x4A
-#define ELF_MACHINE_VAX          0x4B
-#define ELF_MACHINE_CRIS         0x4C
-#define ELF_MACHINE_JAVELIN      0x4D
-#define ELF_MACHINE_FIREPATH     0x4E
-#define ELF_MACHINE_ZSP          0x4F
-#define ELF_MACHINE_TMS320C6000  0x8C
-#define ELF_MACHINE_E2K          0xAF
-#define ELF_MACHINE_AARCH64      0xB7
-#define ELF_MACHINE_Z80          0xDC
-#define ELF_MACHINE_RISCV        0xF3
-#define ELF_MACHINE_BPF          0xF7
-#define ELF_MACHINE_WDC65C816    0x101
-#define ELF_MACHINE_LOONGARCH    0x102
-
-#define ELF_FILETYPE_NONE   0x00
-#define ELF_FILETYPE_REL    0x01
-#define ELF_FILETYPE_EXEC   0x02
-#define ELF_FILETYPE_DYN    0x03
-#define ELF_FILETYPE_CORE   0x04
-#define ELF_FILETYPE_LOOS   0xFE00
-#define ELF_FILETYPE_HIOS   0xFEFF
-#define ELF_FILETYPE_LOPROC 0xFF00
-#define ELF_FILETYPE_HIPROC 0xFFFF
+#define ELF_MACHINE_X86       0x03
+#define ELF_MACHINE_M68K      0x04
+#define ELF_MACHINE_MIPS      0x08
+#define ELF_MACHINE_PPC       0x14
+#define ELF_MACHINE_PPC64     0x15
+#define ELF_MACHINE_S390      0x16
+#define ELF_MACHINE_ARM       0x28
+#define ELF_MACHINE_X86_64    0x3E
+#define ELF_MACHINE_AARCH64   0xB7
+#define ELF_MACHINE_RISCV     0xF3
+#define ELF_MACHINE_LOONGARCH 0x102
+#define ELF_FILETYPE_EXEC     0x02
+#define ELF_FILETYPE_DYN      0x03
 
 struct macho_header
 {
@@ -136,38 +62,9 @@ struct macho_header
     unsigned int reserved;
 };
 
-#define MACHO_CPUTYPE_X86_64  0x01000007
-#define MACHO_CPUTYPE_ARM64   0x0100000C
 #define MACHO_CPUTYPE_X86     0x00000007
 #define MACHO_CPUTYPE_ARM     0x0000000C
-#define MACHO_CPUTYPE_VAX     0x00000001
-#define MACHO_CPUTYPE_ROMP    0x00000002
-#define MACHO_CPUTYPE_NS32032 0x00000004
-#define MACHO_CPUTYPE_NS32332 0x00000005
-#define MACHO_CPUTYPE_MC680x0 0x00000006
-#define MACHO_CPUTYPE_MIPS    0x00000008
-#define MACHO_CPUTYPE_NS32352 0x00000009
-#define MACHO_CPUTYPE_HPPA    0x0000000B
-#define MACHO_CPUTYPE_MC88000 0x0000000D
-#define MACHO_CPUTYPE_SPARC   0x0000000E
-#define MACHO_CPUTYPE_I860_BE 0x0000000F
-#define MACHO_CPUTYPE_I860_LE 0x00000010
-#define MACHO_CPUTYPE_RS6000  0x00000011
 #define MACHO_CPUTYPE_POWERPC 0x00000012
-#define MACHO_CPUTYPE_MC98000 0x00000012
-
-#define MACHO_FILETYPE_OBJECT      0x00000001
-#define MACHO_FILETYPE_EXECUTE     0x00000002
-#define MACHO_FILETYPE_FVMLIB      0x00000003
-#define MACHO_FILETYPE_CORE        0x00000004
-#define MACHO_FILETYPE_PRELOAD     0x00000005
-#define MACHO_FILETYPE_DYLIB       0x00000006
-#define MACHO_FILETYPE_DYLINKER    0x00000007
-#define MACHO_FILETYPE_BUNDLE      0x00000008
-#define MACHO_FILETYPE_DYLIB_STUB  0x00000009
-#define MACHO_FILETYPE_DSYM        0x0000000A
-#define MACHO_FILETYPE_KEXT_BUNDLE 0x0000000B
-#define MACHO_FILETYPE_FILESET     0x0000000C
 
 enum
 {
@@ -212,6 +109,17 @@ struct ubi_header
     uint64_t section_hashes[UBI_MAX_SECTIONS];
 };
 
+#define RD16LE(p) ((uint16_t) (p)[0] | (uint16_t) (p)[1] << 8)
+#define RD16BE(p) ((uint16_t) (p)[1] | (uint16_t) (p)[0] << 8)
+#define RD32LE(p) ((uint32_t) (p)[0] | (uint32_t) (p)[1] << 8 | (uint32_t) (p)[2] << 16 | (uint32_t) (p)[3] << 24)
+#define RD32BE(p) ((uint32_t) (p)[3] | (uint32_t) (p)[2] << 8 | (uint32_t) (p)[1] << 16 | (uint32_t) (p)[0] << 24)
+#define RD64LE(p)                                                                                                      \
+    ((uint64_t) (p)[0] | ((uint64_t) (p)[1] << 8) | ((uint64_t) (p)[2] << 16) | ((uint64_t) (p)[3] << 24)              \
+     | ((uint64_t) (p)[4] << 32) | ((uint64_t) (p)[5] << 40) | ((uint64_t) (p)[6] << 48) | ((uint64_t) (p)[7] << 56))
+#define RD64BE(p)                                                                                                      \
+    ((uint64_t) (p)[7] | ((uint64_t) (p)[6] << 8) | ((uint64_t) (p)[5] << 16) | ((uint64_t) (p)[4] << 24)              \
+     | ((uint64_t) (p)[3] << 32) | ((uint64_t) (p)[2] << 40) | ((uint64_t) (p)[1] << 48) | ((uint64_t) (p)[0] << 56))
+
 /* Endian helpers */
 #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 # define htole16(x) ((uint16_t) (x))
@@ -245,8 +153,6 @@ static inline uint64_t bswap64(uint64_t v)
 # define le64toh(x) bswap64((uint64_t) (x))
 #endif
 
-#define RD16LE(p) ((uint16_t) (p)[0] | (uint16_t) (p)[1] << 8)
-#define RD16BE(p) ((uint16_t) (p)[1] | (uint16_t) (p)[0] << 8)
 #define RD32LE(p) ((uint32_t) (p)[0] | (uint32_t) (p)[1] << 8 | (uint32_t) (p)[2] << 16 | (uint32_t) (p)[3] << 24)
 #define RD32BE(p) ((uint32_t) (p)[3] | (uint32_t) (p)[2] << 8 | (uint32_t) (p)[1] << 16 | (uint32_t) (p)[0] << 24)
 #define RD64LE(p)                                                                                                      \
@@ -368,15 +274,15 @@ ubi_error(const char *fmt, ...)
 
 static int ubi_execute(const char *path)
 {
-    struct ubi_header header = {0};
     FILE *f;
+    char shebang[32];
+    struct ubi_header header = {0};
 
     if ((f = !strcmp(path, "-") ? stdin : fopen(path, "rb")) == NULL)
         return ubi_error("failed to open file: %s", path);
 
     /* Handle optional shebang */
     long start = ftell(f);
-    char shebang[32];
     if (fgets(shebang, sizeof shebang, f) == NULL) {
         fclose(f);
         return ubi_error("failed to read file: %s", path);
@@ -677,7 +583,7 @@ static int ubi_merge(char **sources, int count, const char *out_path)
                 [ELF_MACHINE_PPC] = UBI_SECTION_PPC,         [ELF_MACHINE_PPC64] = UBI_SECTION_PPC64,
                 [ELF_MACHINE_MIPS] = UBI_SECTION_MIPS,       [ELF_MACHINE_RISCV] = UBI_SECTION_RISCV64,
                 [ELF_MACHINE_S390] = UBI_SECTION_S390X,      [ELF_MACHINE_LOONGARCH] = UBI_SECTION_LOONGARCH64,
-                [ELF_MACHINE_SPARCV9] = UBI_SECTION_SPARC64, [ELF_MACHINE_M68K] = UBI_SECTION_M68K};
+                [ELF_MACHINE_M68K] = UBI_SECTION_M68K};
 
             int arch = 0;
             if (e_machine < (int) (sizeof(archmap) / sizeof(archmap[0])))
@@ -774,9 +680,6 @@ static int ubi_merge(char **sources, int count, const char *out_path)
                 break;
             case MACHO_CPUTYPE_POWERPC:
                 flags |= (cputype & ABI64) ? UBI_SECTION_PPC64 : UBI_SECTION_PPC;
-                break;
-            case MACHO_CPUTYPE_MIPS:
-                flags |= UBI_SECTION_MIPS;
                 break;
             default:
                 fclose(in);
@@ -992,11 +895,13 @@ static int ubi_inspect(const char *path)
 /* Append a new executable section to an existing UBI file */
 static int ubi_add(const char *ubi_path, const char *exec_path)
 {
-    FILE *src = fopen(ubi_path, "rb");
-    if (!src)
+    FILE *src;
+    long start;
+
+    if ((src = fopen(ubi_path, "rb")) == NULL)
         return ubi_error("failed to open ubi file: %s", ubi_path);
 
-    long start = ftell(src);
+    start = ftell(src);
     char shebang[32];
     int has_shebang = 0;
     if (fgets(shebang, sizeof shebang, src) && strncmp(shebang, "#!/usr/bin/env ubi", 14) == 0)
@@ -1055,7 +960,7 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
                          [ELF_MACHINE_PPC] = UBI_SECTION_PPC,         [ELF_MACHINE_PPC64] = UBI_SECTION_PPC64,
                          [ELF_MACHINE_MIPS] = UBI_SECTION_MIPS,       [ELF_MACHINE_RISCV] = UBI_SECTION_RISCV64,
                          [ELF_MACHINE_S390] = UBI_SECTION_S390X,      [ELF_MACHINE_LOONGARCH] = UBI_SECTION_LOONGARCH64,
-                         [ELF_MACHINE_SPARCV9] = UBI_SECTION_SPARC64, [ELF_MACHINE_M68K] = UBI_SECTION_M68K};
+                         [ELF_MACHINE_M68K] = UBI_SECTION_M68K};
         int arch = 0;
         if (e_machine < (int) (sizeof(archmap) / sizeof(archmap[0])))
             arch = archmap[e_machine];
@@ -1106,10 +1011,6 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
             break;
         case MACHO_CPUTYPE_POWERPC:
             flags |= (cputype & ABI64) ? UBI_SECTION_PPC64 : UBI_SECTION_PPC;
-            ok = 1;
-            break;
-        case MACHO_CPUTYPE_MIPS:
-            flags |= UBI_SECTION_MIPS;
             ok = 1;
             break;
         default:
@@ -1407,11 +1308,14 @@ int main(int argc, char **argv)
 
         return ubi_add(argv[2], argv[3]);
     } else if (strcmp(argv[1], "remove") == 0) {
+        char *endp;
+        unsigned long long h;
+
         if (argc != 4)
             return ubi_error("usage: %s remove <ubi> <hash>", argv[0]);
 
-        char *endp = NULL;
-        unsigned long long h = strtoull(argv[3], &endp, 16);
+        endp = NULL;
+        h = strtoull(argv[3], &endp, 16);
         if (!endp || *endp)
             return ubi_error("invalid hash: %s", argv[3]);
 
