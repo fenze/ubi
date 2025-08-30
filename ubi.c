@@ -153,15 +153,6 @@ static inline uint64_t bswap64(uint64_t v)
 # define le64toh(x) bswap64((uint64_t) (x))
 #endif
 
-#define RD32LE(p) ((uint32_t) (p)[0] | (uint32_t) (p)[1] << 8 | (uint32_t) (p)[2] << 16 | (uint32_t) (p)[3] << 24)
-#define RD32BE(p) ((uint32_t) (p)[3] | (uint32_t) (p)[2] << 8 | (uint32_t) (p)[1] << 16 | (uint32_t) (p)[0] << 24)
-#define RD64LE(p)                                                                                                      \
-    ((uint64_t) (p)[0] | ((uint64_t) (p)[1] << 8) | ((uint64_t) (p)[2] << 16) | ((uint64_t) (p)[3] << 24)              \
-     | ((uint64_t) (p)[4] << 32) | ((uint64_t) (p)[5] << 40) | ((uint64_t) (p)[6] << 48) | ((uint64_t) (p)[7] << 56))
-#define RD64BE(p)                                                                                                      \
-    ((uint64_t) (p)[7] | ((uint64_t) (p)[6] << 8) | ((uint64_t) (p)[5] << 16) | ((uint64_t) (p)[4] << 24)              \
-     | ((uint64_t) (p)[3] << 32) | ((uint64_t) (p)[2] << 40) | ((uint64_t) (p)[1] << 48) | ((uint64_t) (p)[0] << 56))
-
 static int ubi_header_write(FILE *f, const struct ubi_header *h)
 {
     uint32_t magic = htole32(h->magic);
@@ -200,6 +191,7 @@ static int ubi_header_write(FILE *f, const struct ubi_header *h)
 
 static int ubi_header_read(FILE *f, struct ubi_header *h)
 {
+    size_t n;
     uint32_t magic;
     uint16_t version, section_count;
 
@@ -222,7 +214,7 @@ static int ubi_header_read(FILE *f, struct ubi_header *h)
     if (h->section_count > UBI_MAX_SECTIONS)
         return -1;
 
-    size_t n = h->section_count;
+    n = h->section_count;
     for (size_t i = 0; i < n; i++) {
         uint32_t v;
         if (fread(&v, sizeof v, 1, f) != 1)
@@ -275,14 +267,18 @@ ubi_error(const char *fmt, ...)
 static int ubi_execute(const char *path)
 {
     FILE *f;
+    int pe_present, platform;
+    long start, after_hdr, file_size;
     char shebang[32];
+    size_t want_arch;
+    struct utsname u;
     struct ubi_header header = {0};
 
     if ((f = !strcmp(path, "-") ? stdin : fopen(path, "rb")) == NULL)
         return ubi_error("failed to open file: %s", path);
 
     /* Handle optional shebang */
-    long start = ftell(f);
+    start = ftell(f);
     if (fgets(shebang, sizeof shebang, f) == NULL) {
         fclose(f);
         return ubi_error("failed to read file: %s", path);
@@ -311,7 +307,7 @@ static int ubi_execute(const char *path)
         return ubi_error("invalid section count %u", (unsigned) header.section_count);
     }
 
-    long after_hdr = ftell(f);
+    after_hdr = ftell(f);
     if (after_hdr < 0) {
         fclose(f);
         return ubi_error("ftell failed");
@@ -322,7 +318,7 @@ static int ubi_execute(const char *path)
         return ubi_error("seek end failed");
     }
 
-    long file_size = ftell(f);
+    file_size = ftell(f);
     if (file_size < 0) {
         fclose(f);
         return ubi_error("ftell end failed");
@@ -333,7 +329,7 @@ static int ubi_execute(const char *path)
         return ubi_error("seek restore failed");
     }
 
-    int pe_present = 0;
+    pe_present = 0;
     for (size_t i = 0; i < header.section_count; i++) {
         uint64_t off = header.section_offsets[i];
         uint64_t sz = header.section_sizes[i];
@@ -344,8 +340,7 @@ static int ubi_execute(const char *path)
     }
 
     /* Platform / arch detect */
-    int platform = 0;
-    struct utsname u;
+    platform = 0;
     if (uname(&u) != 0) {
         fclose(f);
         return ubi_error("uname failed");
@@ -360,7 +355,7 @@ static int ubi_execute(const char *path)
         return ubi_error("unsupported platform %s", u.sysname);
     }
 
-    size_t want_arch = 0;
+    want_arch = 0;
     if (!strcmp(u.machine, "x86_64"))
         want_arch = UBI_SECTION_X86_64;
     else if (!strcmp(u.machine, "x86") || !strcmp(u.machine, "i386"))
@@ -397,9 +392,16 @@ static int ubi_execute(const char *path)
     }
 
     for (size_t i = 0; i < header.section_count; i++) {
+        const size_t chunk = 1 << 20;
+        char cpath[128];
+        int out;
+        uint64_t off;
+        uint64_t sz;
         uint32_t flags = header.section_flags[i];
         uint32_t fmt = flags & 0xF0;
         uint32_t arch = flags & 0x0F;
+        uint64_t remaining;
+        char *buf;
 
         if (fmt == UBI_SECTION_PE) { /* PE only supported on Windows (not implemented yet) */
             pe_present = 1;
@@ -417,8 +419,8 @@ static int ubi_execute(const char *path)
         }
 
         /* Extract and execute */
-        uint64_t off = header.section_offsets[i];
-        uint64_t sz = header.section_sizes[i];
+        off = header.section_offsets[i];
+        sz = header.section_sizes[i];
         if (fseek(f, (long) off, SEEK_SET) != 0) {
             fclose(f);
             return ubi_error("seek to section failed");
@@ -427,25 +429,22 @@ static int ubi_execute(const char *path)
         mkdir("/tmp", 0777); // For containers without /tmp
         mkdir("/tmp/ubi", 0777);
 
-        char cpath[128];
         snprintf(cpath, sizeof cpath, "/tmp/ubi/%016llx", (unsigned long long) header.section_hashes[i]);
 
-        int out = open(cpath, O_CREAT | O_WRONLY | O_TRUNC, 0755);
+        out = open(cpath, O_CREAT | O_WRONLY | O_TRUNC, 0755);
         if (out == -1) {
             fclose(f);
             return ubi_error("open cache failed: %s", strerror(errno));
         }
 
-        const size_t chunk = 1 << 20;
-        uint64_t remaining = sz;
+        remaining = sz;
         if (fseeko(f, (off_t) off, SEEK_SET) != 0) {
             close(out);
             fclose(f);
             return ubi_error("seek failed");
         }
 
-        char *buf = malloc(chunk);
-        if (!buf) {
+        if ((buf = malloc(chunk)) == NULL) {
             close(out);
             fclose(f);
             return ubi_error("malloc failed");
@@ -485,21 +484,23 @@ static int ubi_execute(const char *path)
 
 static int ubi_merge(char **sources, int count, const char *out_path)
 {
+    FILE *out;
+    size_t shebang_len;
+    struct ubi_header hdr;
+    const char *shebang = "#!/usr/bin/env ubi\n";
+
     if (count > UBI_MAX_SECTIONS)
         return ubi_error("too many sections: %d (max %d)", count, UBI_MAX_SECTIONS);
 
-    FILE *out = fopen(out_path, "wb");
-    if (!out)
+    if ((out = fopen(out_path, "wb")) == NULL)
         return ubi_error("failed to open output file: %s", out_path);
 
-    const char *shebang = "#!/usr/bin/env ubi\n";
-    size_t shebang_len = strlen(shebang);
+    shebang_len = strlen(shebang);
     if (fwrite(shebang, 1, shebang_len, out) != shebang_len) {
         fclose(out);
         return ubi_error("failed to write shebang");
     }
 
-    struct ubi_header hdr;
     memset(&hdr, 0, sizeof hdr);
     hdr.magic = UBI_MAGIC;
     hdr.version = UBI_VERSION;
@@ -512,71 +513,37 @@ static int ubi_merge(char **sources, int count, const char *out_path)
     }
 
     for (int i = 0; i < count; i++) {
-        FILE *in = fopen(sources[i], "rb");
-        if (!in) {
+        FILE *in;
+        long sz;
+        size_t flags = 0;
+        size_t r;
+        uint64_t hash = 14695981039346656037ULL;
+        unsigned char buf[1 << 16];
+        unsigned char magic[4];
+        FILE *in2;
+        uint64_t remaining;
+
+        if ((in = fopen(sources[i], "rb")) == NULL) {
             fclose(out);
             return ubi_error("failed to open source: %s", sources[i]);
         }
 
-        unsigned char magic[4];
         if (fread(magic, 1, 4, in) != 4) {
             fclose(in);
             fclose(out);
             return ubi_error("failed to read magic: %s", sources[i]);
         }
-        size_t flags = 0;
 
         if (memcmp(magic,
                    "\x7F"
                    "ELF",
                    4)
             == 0) {
-            flags |= UBI_SECTION_ELF;
-            /* Robust ELF header read (first 64 bytes cover both 32/64) */
             unsigned char ehdr[64];
-            if (fseek(in, 0, SEEK_SET) != 0 || fread(ehdr, 1, 64, in) != 64) {
-                fclose(in);
-                fclose(out);
-                return ubi_error("failed to read ELF header: %s", sources[i]);
-            }
-            int is_64 = (ehdr[4] == 2);
-            int is_le = (ehdr[5] == 1);
             uint16_t e_type, e_machine, e_phentsize, e_phnum;
             uint64_t e_phoff = 0;
-
-            /* Use endian-aware macros for reading ELF fields, unpacked */
-            if (is_le) {
-                /* Read e_type and e_machine (object file type and architecture) */
-                e_type = RD16LE(ehdr + 16);
-                e_machine = RD16LE(ehdr + 18);
-
-                if (!is_64) {
-                    /* 32-bit ELF: program header offset, entry size, and count */
-                    e_phoff = RD32LE(ehdr + 28);
-                    e_phentsize = RD16LE(ehdr + 42);
-                    e_phnum = RD16LE(ehdr + 44);
-                } else {
-                    /* 64-bit ELF: program header offset, entry size, and count */
-                    e_phoff = RD64LE(ehdr + 32);
-                    e_phentsize = RD16LE(ehdr + 54);
-                    e_phnum = RD16LE(ehdr + 56);
-                }
-            } else {
-                /* Big-endian ELF: same fields as above, but use BE macros */
-                e_type = RD16BE(ehdr + 16);
-                e_machine = RD16BE(ehdr + 18);
-
-                if (!is_64) {
-                    e_phoff = RD32BE(ehdr + 28);
-                    e_phentsize = RD16BE(ehdr + 42);
-                    e_phnum = RD16BE(ehdr + 44);
-                } else {
-                    e_phoff = RD64BE(ehdr + 32);
-                    e_phentsize = RD16BE(ehdr + 54);
-                    e_phnum = RD16BE(ehdr + 56);
-                }
-            }
-
+            int is_64;
+            int is_le;
             int archmap[] = {
                 [ELF_MACHINE_X86] = UBI_SECTION_X86,         [ELF_MACHINE_X86_64] = UBI_SECTION_X86_64,
                 [ELF_MACHINE_AARCH64] = UBI_SECTION_AARCH64, [ELF_MACHINE_ARM] = UBI_SECTION_ARM,
@@ -584,8 +551,54 @@ static int ubi_merge(char **sources, int count, const char *out_path)
                 [ELF_MACHINE_MIPS] = UBI_SECTION_MIPS,       [ELF_MACHINE_RISCV] = UBI_SECTION_RISCV64,
                 [ELF_MACHINE_S390] = UBI_SECTION_S390X,      [ELF_MACHINE_LOONGARCH] = UBI_SECTION_LOONGARCH64,
                 [ELF_MACHINE_M68K] = UBI_SECTION_M68K};
-
             int arch = 0;
+            int is_static;
+
+            flags |= UBI_SECTION_ELF;
+
+            /* Robust ELF header read (first 64 bytes cover both 32/64) */
+            if (fseek(in, 0, SEEK_SET) != 0 || fread(ehdr, 1, 64, in) != 64) {
+                fclose(in);
+                fclose(out);
+                return ubi_error("failed to read ELF header: %s", sources[i]);
+            }
+
+            is_64 = (ehdr[4] == 2);
+            is_le = (ehdr[5] == 1);
+
+            /* Use endian-aware macros for reading ELF fields, unpacked */
+            if (is_le) {
+                /* Read e_type and e_machine (object file type and architecture) */
+                e_type = (uint16_t) RD16LE(ehdr + 16);
+                e_machine = (uint16_t) RD16LE(ehdr + 18);
+
+                if (!is_64) {
+                    /* 32-bit ELF: program header offset, entry size, and count */
+                    e_phoff = RD32LE(ehdr + 28);
+                    e_phentsize = (uint16_t) RD16LE(ehdr + 42);
+                    e_phnum = (uint16_t) RD16LE(ehdr + 44);
+                } else {
+                    /* 64-bit ELF: program header offset, entry size, and count */
+                    e_phoff = RD64LE(ehdr + 32);
+                    e_phentsize = (uint16_t) RD16LE(ehdr + 54);
+                    e_phnum = (uint16_t) RD16LE(ehdr + 56);
+                }
+            } else {
+                /* Big-endian ELF: same fields as above, but use BE macros */
+                e_type = (uint16_t) RD16BE(ehdr + 16);
+                e_machine = (uint16_t) RD16BE(ehdr + 18);
+
+                if (!is_64) {
+                    e_phoff = RD32BE(ehdr + 28);
+                    e_phentsize = (uint16_t) RD16BE(ehdr + 42);
+                    e_phnum = (uint16_t) RD16BE(ehdr + 44);
+                } else {
+                    e_phoff = RD64BE(ehdr + 32);
+                    e_phentsize = (uint16_t) RD16BE(ehdr + 54);
+                    e_phnum = (uint16_t) RD16BE(ehdr + 56);
+                }
+            }
+
             if (e_machine < (int) (sizeof(archmap) / sizeof(archmap[0])))
                 arch = archmap[e_machine];
 
@@ -601,7 +614,6 @@ static int ubi_merge(char **sources, int count, const char *out_path)
                 arch = UBI_SECTION_MIPS64;
             if (e_machine == ELF_MACHINE_LOONGARCH && !is_64)
                 arch = UBI_SECTION_LOONGARCH32;
-            flags |= arch;
 
             flags |= (size_t) arch;
 
@@ -612,23 +624,28 @@ static int ubi_merge(char **sources, int count, const char *out_path)
             }
 
             /* Static detection: absence of PT_INTERP (type 3) */
-            int is_static = 1;
+            is_static = 1;
             if (e_phoff && e_phnum && e_phentsize >= 4) {
                 for (uint16_t ph = 0; ph < e_phnum; ph++) {
+                    unsigned char p[4];
+                    unsigned int p_type;
                     uint64_t off = e_phoff + (uint64_t) ph * e_phentsize;
+
                     if (fseek(in, (long) off, SEEK_SET) != 0) {
                         fclose(in);
                         fclose(out);
                         return ubi_error("seek phdr failed: %s", sources[i]);
                     }
-                    unsigned char p[4];
+
                     if (fread(p, 1, 4, in) != 4) {
                         fclose(in);
                         fclose(out);
                         return ubi_error("read phdr failed: %s", sources[i]);
                     }
-                    unsigned int p_type = (unsigned int) p[0] | ((unsigned int) p[1] << 8) | ((unsigned int) p[2] << 16)
-                                        | ((unsigned int) p[3] << 24);
+
+                    p_type = (unsigned int) p[0] | ((unsigned int) p[1] << 8) | ((unsigned int) p[2] << 16)
+                           | ((unsigned int) p[3] << 24);
+
                     if (p_type == 3) {
                         is_static = 0;
                         break;
@@ -648,8 +665,16 @@ static int ubi_merge(char **sources, int count, const char *out_path)
             }
         } else if (!memcmp(magic, "\xCE\xFA\xED\xFE", 4) || !memcmp(magic, "\xCF\xFA\xED\xFE", 4)
                    || !memcmp(magic, "\xFE\xED\xFA\xCE", 4) || !memcmp(magic, "\xFE\xED\xFA\xCF", 4)) {
-            flags |= UBI_SECTION_MACHO;
+            int is_be;
+            uint32_t cputype;
+            uint32_t filetype;
+            uint32_t m;
+            uint32_t base;
             unsigned char mh[sizeof(struct macho_header)];
+            const uint32_t ABI64 = 0x01000000;
+
+            flags |= UBI_SECTION_MACHO;
+
             if (fseek(in, 0, SEEK_SET) != 0 || fread(mh, 1, sizeof mh, in) != sizeof mh) {
                 fclose(in);
                 fclose(out);
@@ -661,25 +686,23 @@ static int ubi_merge(char **sources, int count, const char *out_path)
                little-end 64: 0xCFFAEDFE
                big-end   32:  0xFEEDFACE
                big-end   64:  0xFEEDFACF */
-            uint32_t m = (uint32_t) mh[0] << 24 | (uint32_t) mh[1] << 16 | (uint32_t) mh[2] << 8 | mh[3];
-            int is_be = (m == 0xFEEDFACE || m == 0xFEEDFACF);
+            m = (uint32_t) mh[0] << 24 | (uint32_t) mh[1] << 16 | (uint32_t) mh[2] << 8 | mh[3];
+            is_be = (m == 0xFEEDFACE || m == 0xFEEDFACF);
 
-            uint32_t cputype = is_be ? RD32BE(mh + 4) : RD32LE(mh + 4);
-            uint32_t filetype = is_be ? RD32BE(mh + 12) : RD32LE(mh + 12);
+            cputype = is_be ? RD32BE(mh + 4) : RD32LE(mh + 4);
+            filetype = is_be ? RD32BE(mh + 12) : RD32LE(mh + 12);
 
-            /* CPU_ARCH_ABI64 bit (0x01000000) indicates 64-bit variant */
-            const uint32_t ABI64 = 0x01000000;
-            uint32_t base = cputype & ~ABI64;
+            base = cputype & ~ABI64;
 
             switch (base) {
             case MACHO_CPUTYPE_X86:
-                flags |= (cputype & ABI64) ? UBI_SECTION_X86_64 : UBI_SECTION_X86;
+                flags |= ((uint32_t) cputype & ABI64) ? UBI_SECTION_X86_64 : UBI_SECTION_X86;
                 break;
             case MACHO_CPUTYPE_ARM:
-                flags |= (cputype & ABI64) ? UBI_SECTION_AARCH64 : UBI_SECTION_ARM;
+                flags |= ((uint32_t) cputype & ABI64) ? UBI_SECTION_AARCH64 : UBI_SECTION_ARM;
                 break;
             case MACHO_CPUTYPE_POWERPC:
-                flags |= (cputype & ABI64) ? UBI_SECTION_PPC64 : UBI_SECTION_PPC;
+                flags |= ((uint32_t) cputype & ABI64) ? UBI_SECTION_PPC64 : UBI_SECTION_PPC;
                 break;
             default:
                 fclose(in);
@@ -705,7 +728,7 @@ static int ubi_merge(char **sources, int count, const char *out_path)
             return ubi_error("unknown format: %s", sources[i]);
         }
 
-        long sz = ftell(in);
+        sz = ftell(in);
         if (sz < 0) {
             fclose(in);
             fclose(out);
@@ -720,9 +743,6 @@ static int ubi_merge(char **sources, int count, const char *out_path)
         hdr.section_flags[i] = (uint32_t) flags;
         hdr.section_sizes[i] = (uint64_t) sz;
 
-        uint64_t hash = 14695981039346656037ULL;
-        unsigned char buf[1 << 16];
-        size_t r;
         while ((r = fread(buf, 1, sizeof buf, in)) > 0) {
             for (size_t k = 0; k < r; k++) {
                 hash ^= buf[k];
@@ -749,12 +769,12 @@ static int ubi_merge(char **sources, int count, const char *out_path)
         fclose(in);
 
         hdr.section_offsets[i] = (uint64_t) ftell(out);
-        FILE *in2 = fopen(sources[i], "rb");
-        if (!in2) {
+        if ((in2 = fopen(sources[i], "rb")) == NULL) {
             fclose(out);
             return ubi_error("reopen failed: %s", sources[i]);
         }
-        uint64_t remaining = hdr.section_sizes[i];
+
+        remaining = hdr.section_sizes[i];
         while (remaining > 0) {
             size_t chunk = remaining > sizeof buf ? sizeof buf : (size_t) remaining;
             size_t got = fread(buf, 1, chunk, in2);
@@ -795,9 +815,11 @@ static int ubi_merge(char **sources, int count, const char *out_path)
 
 static int copy_section_data(const char *ubi_path, uint64_t src_offset, uint64_t size, FILE *out, uint64_t *new_offset)
 {
-    FILE *re = fopen(ubi_path, "rb");
+    FILE *re;
+    uint64_t left;
+    unsigned char buf[1 << 16];
 
-    if (!re)
+    if ((re = fopen(ubi_path, "rb")) == NULL)
         return ubi_error("reopen ubi failed");
 
     if (fseek(re, (long) src_offset, SEEK_SET) != 0) {
@@ -806,8 +828,7 @@ static int copy_section_data(const char *ubi_path, uint64_t src_offset, uint64_t
     }
 
     *new_offset = (uint64_t) ftell(out);
-    unsigned char buf[1 << 16];
-    uint64_t left = size;
+    left = size;
     while (left) {
         size_t chunk = left > sizeof buf ? sizeof buf : (size_t) left;
 
@@ -830,12 +851,15 @@ static int copy_section_data(const char *ubi_path, uint64_t src_offset, uint64_t
 
 static int ubi_inspect(const char *path)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f)
+    FILE *f;
+    char shebang[32];
+    long start, after, fsize;
+    struct ubi_header hdr;
+
+    if ((f = fopen(path, "rb")) == NULL)
         return ubi_error("failed to open binary file: %s", path);
 
-    long start = ftell(f);
-    char shebang[32];
+    start = ftell(f);
     if (fgets(shebang, sizeof shebang, f) && strncmp(shebang, "#!/usr/bin/env ubi", 14) != 0) {
         fseek(f, start, SEEK_SET);
     } else if (feof(f)) {
@@ -843,15 +867,14 @@ static int ubi_inspect(const char *path)
         return ubi_error("file too small: %s", path);
     }
 
-    struct ubi_header hdr;
     if (ubi_header_read(f, &hdr) != 0) {
         fclose(f);
         return ubi_error("failed to read ubi header.");
     }
 
-    long after = ftell(f);
+    after = ftell(f);
     fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
+    fsize = ftell(f);
     fseek(f, after, SEEK_SET);
     fclose(f);
 
@@ -895,21 +918,36 @@ static int ubi_inspect(const char *path)
 /* Append a new executable section to an existing UBI file */
 static int ubi_add(const char *ubi_path, const char *exec_path)
 {
-    FILE *src;
-    long start;
+    FILE *src, *nexe, *out;
+    char shebang[32];
+    char tmp_path[512];
+    const uint32_t ABI64 = 0x01000000;
+    int has_shebang = 0, ok;
+    int is_be;
+    int32_t cputype;
+    long start, new_size;
+    size_t hr, new_index, flags;
+    size_t nr;
+    size_t shebang_len;
+    struct ubi_header hdr;
+    struct ubi_header newhdr = {0};
+    uint32_t m;
+    uint64_t hash = 14695981039346656037ULL;
+    uint64_t new_hash = 14695981039346656037ULL;
+    uint64_t written = 0;
+    unsigned char buf2[1 << 16];
+    unsigned char hbuf[1 << 16];
+    unsigned char magic[4];
 
     if ((src = fopen(ubi_path, "rb")) == NULL)
         return ubi_error("failed to open ubi file: %s", ubi_path);
 
     start = ftell(src);
-    char shebang[32];
-    int has_shebang = 0;
     if (fgets(shebang, sizeof shebang, src) && strncmp(shebang, "#!/usr/bin/env ubi", 14) == 0)
         has_shebang = 1;
     else
         fseek(src, start, SEEK_SET);
 
-    struct ubi_header hdr;
     if (ubi_header_read(src, &hdr) != 0) {
         fclose(src);
         return ubi_error("failed to read ubi header: %s", ubi_path);
@@ -925,19 +963,19 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
 
     /* Gather existing section binary data positions (already stored) */
     /* Open new executable and detect format/arch by reusing merge logic (simplified) */
-    FILE *nexe = fopen(exec_path, "rb");
+    nexe = fopen(exec_path, "rb");
     if (!nexe) {
         fclose(src);
         return ubi_error("failed to open executable: %s", exec_path);
     }
-    unsigned char magic[4];
+
     if (fread(magic, 1, 4, nexe) != 4) {
         fclose(nexe);
         fclose(src);
         return ubi_error("failed to read magic of new section: %s", exec_path);
     }
-    size_t flags = 0;
-    int ok = 0;
+    flags = 0;
+    ok = 0;
 
     /* Simple reuse of detection (subset of logic in ubi_merge) */
     if (memcmp(magic,
@@ -945,30 +983,38 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
                "ELF",
                4)
         == 0) {
-        flags |= UBI_SECTION_ELF;
+        int arch = 0;
         unsigned char ehdr[64];
-        fseek(nexe, 0, SEEK_SET);
-        if (fread(ehdr, 1, 64, nexe) != 64) {
-            fclose(nexe);
-            fclose(src);
-            return ubi_error("failed ELF hdr read: %s", exec_path);
-        }
-        uint16_t e_type = (uint16_t) (ehdr[16] | (ehdr[17] << 8));
-        uint16_t e_machine = (uint16_t) (ehdr[18] | (ehdr[19] << 8));
+        uint16_t e_type;
+        uint16_t e_machine;
         int archmap[] = {[ELF_MACHINE_X86] = UBI_SECTION_X86,         [ELF_MACHINE_X86_64] = UBI_SECTION_X86_64,
                          [ELF_MACHINE_AARCH64] = UBI_SECTION_AARCH64, [ELF_MACHINE_ARM] = UBI_SECTION_ARM,
                          [ELF_MACHINE_PPC] = UBI_SECTION_PPC,         [ELF_MACHINE_PPC64] = UBI_SECTION_PPC64,
                          [ELF_MACHINE_MIPS] = UBI_SECTION_MIPS,       [ELF_MACHINE_RISCV] = UBI_SECTION_RISCV64,
                          [ELF_MACHINE_S390] = UBI_SECTION_S390X,      [ELF_MACHINE_LOONGARCH] = UBI_SECTION_LOONGARCH64,
                          [ELF_MACHINE_M68K] = UBI_SECTION_M68K};
-        int arch = 0;
+
+        flags |= UBI_SECTION_ELF;
+
+        fseek(nexe, 0, SEEK_SET);
+        if (fread(ehdr, 1, 64, nexe) != 64) {
+            fclose(nexe);
+            fclose(src);
+            return ubi_error("failed ELF hdr read: %s", exec_path);
+        }
+
+        e_type = (uint16_t) (ehdr[16] | (ehdr[17] << 8));
+        e_machine = (uint16_t) (ehdr[18] | (ehdr[19] << 8));
+
         if (e_machine < (int) (sizeof(archmap) / sizeof(archmap[0])))
             arch = archmap[e_machine];
+
         if (!arch) {
             fclose(nexe);
             fclose(src);
             return ubi_error("unsupported elf machine in add: %u", e_machine);
         }
+
         /* Refine by ELF class for multi-ABI machines */
         if (e_machine == ELF_MACHINE_RISCV && (ehdr[4] != 2))
             arch = UBI_SECTION_RISCV32;
@@ -981,36 +1027,38 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
             fclose(src);
             return ubi_error("ELF not executable: %s", exec_path);
         }
-        flags |= arch;
+
         flags |= (size_t) arch;
+
         ok = 1;
         fseek(nexe, 0, SEEK_END);
     } else if (!memcmp(magic, "\xCE\xFA\xED\xFE", 4) || !memcmp(magic, "\xCF\xFA\xED\xFE", 4)
                || !memcmp(magic, "\xFE\xED\xFA\xCE", 4) || !memcmp(magic, "\xFE\xED\xFA\xCF", 4)) {
-        flags |= UBI_SECTION_MACHO;
+        uint32_t base;
         unsigned char mh[28];
+
+        flags |= UBI_SECTION_MACHO;
         fseek(nexe, 0, SEEK_SET);
         if (fread(mh, 1, sizeof mh, nexe) != sizeof mh) {
             fclose(nexe);
             fclose(src);
             return ubi_error("Mach-O hdr read failed: %s", exec_path);
         }
-        uint32_t m = (uint32_t) mh[0] << 24 | (uint32_t) mh[1] << 16 | (uint32_t) mh[2] << 8 | mh[3];
-        int is_be = (m == 0xFEEDFACE || m == 0xFEEDFACF);
-        uint32_t cputype = is_be ? RD32BE(mh + 4) : RD32LE(mh + 4);
-        const uint32_t ABI64 = 0x01000000;
-        uint32_t base = cputype & ~ABI64;
+        m = (uint32_t) mh[0] << 24 | (uint32_t) mh[1] << 16 | (uint32_t) mh[2] << 8 | mh[3];
+        is_be = (m == 0xFEEDFACE || m == 0xFEEDFACF);
+        cputype = (int32_t) (is_be ? RD32BE(mh + 4) : RD32LE(mh + 4));
+        base = (uint32_t) cputype & ~ABI64;
         switch (base) {
         case MACHO_CPUTYPE_X86:
-            flags |= (cputype & ABI64) ? UBI_SECTION_X86_64 : UBI_SECTION_X86;
+            flags |= (((uint32_t) cputype & ABI64) ? UBI_SECTION_X86_64 : UBI_SECTION_X86);
             ok = 1;
             break;
         case MACHO_CPUTYPE_ARM:
-            flags |= (cputype & ABI64) ? UBI_SECTION_AARCH64 : UBI_SECTION_ARM;
+            flags |= ((uint32_t) cputype & ABI64) ? UBI_SECTION_AARCH64 : UBI_SECTION_ARM;
             ok = 1;
             break;
         case MACHO_CPUTYPE_POWERPC:
-            flags |= (cputype & ABI64) ? UBI_SECTION_PPC64 : UBI_SECTION_PPC;
+            flags |= ((uint32_t) cputype & ABI64) ? UBI_SECTION_PPC64 : UBI_SECTION_PPC;
             ok = 1;
             break;
         default:
@@ -1027,7 +1075,7 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
         fclose(src);
         return ubi_error("unsupported new section format/arch: %s", exec_path);
     }
-    long new_size = ftell(nexe);
+    new_size = ftell(nexe);
     if (new_size < 0) {
         fclose(nexe);
         fclose(src);
@@ -1035,9 +1083,6 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
     }
     /* Compute hash of new executable for duplicate detection */
     fseek(nexe, 0, SEEK_SET);
-    uint64_t new_hash = 14695981039346656037ULL;
-    unsigned char hbuf[1 << 16];
-    size_t hr;
     while ((hr = fread(hbuf, 1, sizeof hbuf, nexe)) > 0) {
         for (size_t k = 0; k < hr; k++) {
             new_hash ^= hbuf[k];
@@ -1061,10 +1106,9 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
     fseek(nexe, 0, SEEK_SET);
 
     /* Build output in temp file */
-    char tmp_path[512];
     snprintf(tmp_path, sizeof tmp_path, "%s.tmp", ubi_path);
-    FILE *out = fopen(tmp_path, "wb");
-    if (!out) {
+
+    if ((out = fopen(tmp_path, "wb"))) {
         fclose(nexe);
         fclose(src);
         return ubi_error("open temp failed");
@@ -1075,13 +1119,12 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
         fputs("#!/usr/bin/env ubi\n", out);
     }
 
-    struct ubi_header newhdr = {0};
     newhdr.magic = UBI_MAGIC;
     newhdr.version = UBI_VERSION;
     newhdr.section_count = hdr.section_count + 1;
 
     /* Reserve space */
-    size_t shebang_len = has_shebang ? strlen("#!/usr/bin/env ubi\n") : 0;
+    shebang_len = has_shebang ? strlen("#!/usr/bin/env ubi\n") : 0;
     if (fseek(out, (long) (shebang_len + ubi_header_size(UBI_VERSION, newhdr.section_count)), SEEK_SET) != 0) {
         fclose(out);
         fclose(nexe);
@@ -1105,14 +1148,10 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
     }
 
     /* Append new section */
-    size_t new_index = hdr.section_count;
+    new_index = hdr.section_count;
     newhdr.section_flags[new_index] = (uint32_t) flags;
     newhdr.section_offsets[new_index] = (uint64_t) ftell(out);
 
-    uint64_t hash = 14695981039346656037ULL;
-    unsigned char buf2[1 << 16];
-    uint64_t written = 0;
-    size_t nr;
     while ((nr = fread(buf2, 1, sizeof buf2, nexe)) > 0) {
         for (size_t k = 0; k < nr; k++) {
             hash ^= buf2[k];
@@ -1167,29 +1206,37 @@ static int ubi_add(const char *ubi_path, const char *exec_path)
 /* Remove a section (by index) from a UBI file */
 static int ubi_remove(const char *ubi_path, uint64_t target_hash)
 {
+    long start;
+    int index;
+    size_t out_i;
     struct stat st;
+    FILE *src, *out;
+    size_t shebang_len;
+    char shebang[32];
+    char tmp_path[512];
+    int has_shebang = 0;
     mode_t orig_mode = 0;
+    struct ubi_header hdr;
+    struct ubi_header newhdr = {0};
+
     if (stat(ubi_path, &st) == 0)
         orig_mode = st.st_mode & 07777;
 
-    FILE *src = fopen(ubi_path, "rb");
-    if (!src)
+    if ((src = fopen(ubi_path, "rb")) == NULL)
         return ubi_error("failed to open ubi file: %s", ubi_path);
 
-    long start = ftell(src);
-    char shebang[32];
-    int has_shebang = 0;
+    start = ftell(src);
     if (fgets(shebang, sizeof shebang, src) && strncmp(shebang, "#!/usr/bin/env ubi", 14) == 0)
         has_shebang = 1;
     else
         fseek(src, start, SEEK_SET);
 
-    struct ubi_header hdr;
     if (ubi_header_read(src, &hdr) != 0) {
         fclose(src);
         return ubi_error("failed to read header");
     }
-    int index = -1;
+
+    index = -1;
     for (size_t i = 0; i < hdr.section_count; i++) {
         if (hdr.section_hashes[i] == target_hash) {
             index = (int) i;
@@ -1201,18 +1248,16 @@ static int ubi_remove(const char *ubi_path, uint64_t target_hash)
         return ubi_error("no section with hash %016llx", (unsigned long long) target_hash);
     }
 
-    char tmp_path[512];
     snprintf(tmp_path, sizeof tmp_path, "%s.tmp", ubi_path);
-    FILE *out = fopen(tmp_path, "wb");
+    out = fopen(tmp_path, "wb");
     if (!out) {
         fclose(src);
         return ubi_error("open temp failed");
     }
-    size_t shebang_len = has_shebang ? strlen("#!/usr/bin/env ubi\n") : 0;
+    shebang_len = has_shebang ? strlen("#!/usr/bin/env ubi\n") : 0;
     if (has_shebang)
         fputs("#!/usr/bin/env ubi\n", out);
 
-    struct ubi_header newhdr = {0};
     newhdr.magic = UBI_MAGIC;
     newhdr.version = UBI_VERSION;
     newhdr.section_count = (uint16_t) (hdr.section_count - 1);
@@ -1224,7 +1269,7 @@ static int ubi_remove(const char *ubi_path, uint64_t target_hash)
     }
 
     /* Copy all except index (using helper) */
-    size_t out_i = 0;
+    out_i = 0;
     for (size_t i = 0; i < hdr.section_count; i++) {
         if ((int) i == index)
             continue;
